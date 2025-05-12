@@ -1,0 +1,76 @@
+bert:
+  attention_probs_dropout_prob: 0.1
+  bert_encoder_path: ''
+  hidden_act: gelu
+  hidden_dropout_prob: 0.1
+  hidden_size: 768
+  initializer_range: 0.02
+  intermediate_size: 3072
+  max_position_embeddings: 512
+  num_attention_heads: 12
+  num_hidden_layers: 12
+  txt_word_embeddings_path: ''
+  type_vocab_size: 2
+  use_bert_tokenizer: false
+  vocab_dim: 256
+  vocab_pth: weights/coco_vocab.json
+  vocab_size: 53
+data:
+  dataset: else
+  num_workers: 32
+  one_to_one: false
+  pin_memory: true
+  small_set: false
+  small_train_size: 500
+  small_val_size: 100
+  train_img_dbs:
+  - '/Users/michellechang/DiffCap/data/train_images'
+  train_txt_dbs:
+  - '/Users/michellechang/DiffCap/data/lmdb_train_texts'
+  val_img_db: '/Users/michellechang/DiffCap/data/val_images'
+  val_txt_db: '/Users/michellechang/DiffCap/data/lmdb_val_texts'
+diffusion:
+  beta_end: 0.02
+  beta_schedule: sqrt
+  beta_start: 0.0001
+  num_diffusion_timesteps: 2000
+  rescale_timesteps: true
+  schedule_test: false
+model:
+  condition_method: prefix
+  dropout: 0.1
+  feature_dim: 512
+  feature_type: vit_cls
+  fix_len: true
+  max_len: 32
+  mean_type: start_x
+  predict_x_0: true
+  t_head: false
+  unconditional: false
+  var_type: fixedlarge
+optim:
+  amsgrad: false
+  beta1: 0.9
+  eps: 1.0e-08
+  grad_clip: -1.0
+  lr: 0.0001
+  optimizer: AdamW
+  repeat_times: 5
+  scheduler: Linear
+  top_anneal: 100
+  weight_decay: 0.0
+sampling:
+  batch_size: 50
+  last_only: true
+training:
+  batch_size: 64
+  check_grad: false
+  encoder_reinit: true
+  fp16: false
+  method: nofreeze
+  n_epochs: 10
+  resume_pth: ''
+  resume_training: false
+  snapshot_freq: 500
+  use_bert_embedding: false
+  warmup_steps: 0
