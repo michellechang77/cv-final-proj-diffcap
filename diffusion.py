@@ -1,4 +1,5 @@
 import os
+import os
 import math
 import logging
 import blobfile as bf
@@ -8,7 +9,7 @@ import numpy as np
 import tqdm
 import torch
 
-import horovod.torch as hvd
+#import horovod.torch as hvd
 
 from model import CapLM, RocLM
 from utils import get_optimizer
@@ -345,6 +346,23 @@ class Diffusion(object):
         return t
 
     def diffusion_lm_loss(self, model, batch, t):
+
+        print("=== BATCH STRUCTURE ===")
+        print("Batch keys:", batch.keys())
+        
+        # Print input tensors
+        x_start = batch['input_ids']
+        imgs = batch['imgs']
+        
+        print("x_start shape:", x_start.shape)
+        print("imgs shape:", imgs.shape)
+        print("Max index in input_ids:", x_start.max().item())
+        print("Vocab size:", model.config.vocab_size)
+        
+        # Additional check to prevent out of bounds
+        if x_start.max().item() >= model.config.vocab_size:
+            print("🚫 Out of bounds index detected in input_ids!")
+            raise IndexError("Token index exceeds vocab size")
         terms = {}
         input_ids = batch['input_ids'].to('cuda')
         loss_mask = batch['loss_mask'].to('cuda')
@@ -364,7 +382,13 @@ class Diffusion(object):
         mse_loss_mask = loss_mask.unsqueeze(-1).expand(-1, -1, self.config.bert.vocab_dim)
 
         x_start_mean = model.word_embedding(input_ids)
-        assert torch.isnan(x_start_mean).sum() == 0
+        imgs = batch['imgs']
+        if torch.isnan(x_start_mean).sum() > 0:
+          print("NaNs found in x_start_mean at step", t)
+          print("x_start_mean:", x_start_mean)
+          print("Batch shape:", x_start.shape)
+          print("Image batch shape:", imgs.shape)
+          raise RuntimeError("NaNs in x_start_mean")
         assert torch.isinf(x_start_mean).sum() == 0
         std = _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod,
                                    torch.tensor([0]).to(x_start_mean.device),
@@ -717,11 +741,11 @@ class Diffusion(object):
                             step,
                         ]
                         torch.save(states, os.path.join(self.args.log_path, "ckpt_{}_{}.pth".format(step, eval_loss)))
-                        if hvd.rank() == 0:
-                            logging.info("improved eval loss {}".format(eval_loss))
-                    else:
-                        if hvd.rank() == 0:
-                            logging.info("eval loss not improved: {} best is {}".format(eval_loss, self.avg_eval_loss))
+                        # if hvd.rank() == 0:
+                        #     logging.info("improved eval loss {}".format(eval_loss))
+                    # else:
+                        # if hvd.rank() == 0:
+                        #     logging.info("eval loss not improved: {} best is {}".format(eval_loss, self.avg_eval_loss))
                     report_on_start = False
 
     def train(self):
@@ -739,11 +763,11 @@ class Diffusion(object):
         # model = torch.nn.DataParallel(model, device_ids=[0, 1])
         model_named_params = [{'params': p, 'layer_name': n} for n, p in model.named_parameters() if p.requires_grad]
         optimizer = get_optimizer(self.config, model_named_params)
-        optimizer = hvd.DistributedOptimizer(optimizer,
-                                             named_parameters=model.named_parameters(),)
+        #optimizer = hvd.DistributedOptimizer(optimizer,
+                                             #named_parameters=model.named_parameters(),)
 
-        hvd.broadcast_parameters(model.state_dict(), root_rank=0)
-        hvd.broadcast_optimizer_state(optimizer, root_rank=0)
+        #hvd.broadcast_parameters(model.state_dict(), root_rank=0)
+        #hvd.broadcast_optimizer_state(optimizer, root_rank=0)
 
         #scaler = torch.cuda.amp.GradScaler(enabled=config.training.fp16)
 
@@ -763,9 +787,9 @@ class Diffusion(object):
             print(" not resume training ")
 
 
-        if hvd.rank() == 0:
-            pbar = tqdm(total=len(train_data) * self.config.training.n_epochs)
-            #pbar = tqdm(total=self.total_steps)
+        # if hvd.rank() == 0:
+        #     pbar = tqdm(total=len(train_data) * self.config.training.n_epochs)
+             #pbar = tqdm(total=self.total_steps)
         self.total_steps = len(train_data) * self.config.training.n_epochs
         lr_scheduler =get_lr_scheduler(optimizer, total_steps=self.total_steps, config=config)
 

@@ -114,26 +114,49 @@ def pad_tensors(tensors, lens=None, pad=0):
         output.data[i, :l, ...] = t.data
     return output
 
-def itm_rank_collate(inputs):
-    input_ids, imgs, loss_mask, img_id = list(map(list, unzip(concat(i for i in [inputs]))))
-    #print('got loss: mask', loss_mask)
+def itm_rank_collate(batch):
+    # Unzip the batch into separate components
+    input_ids, imgs, loss_masks, img_ids = zip(*batch)
+
+    # Convert lists to tensors for padding
+    input_ids = [torch.tensor(ids, dtype=torch.long) for ids in input_ids]
+    loss_masks = [torch.tensor(mask, dtype=torch.float) for mask in loss_masks]
+
+    # Pad sequences to the same length
     input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
-    #sep = torch.stack(sep, dim=0).unsqueeze(-1)
-    #input_ids = torch.cat([input_ids, sep], dim=1)
-    #position_ids = torch.arange(0, input_ids.size(1), dtype=torch.long).unsqueeze(0)
+    loss_masks = pad_sequence(loss_masks, batch_first=True, padding_value=0)
 
-    loss_mask = pad_sequence(loss_mask, batch_first=True, padding_value=True)
+    # Ensure imgs is a list of tensors, not a single stacked tensor
+    if isinstance(imgs[0], torch.Tensor):
+        imgs = list(imgs)
 
-    _, max_txt_len = input_ids.size()
+    # Return a dictionary as expected by the model
+    return {
+        "input_ids": input_ids,
+        "imgs": imgs,  # Keep as list for stacking later
+        "loss_mask": loss_masks,
+        "img_ids": list(img_ids)  # Leave as list if they are strings
+    }
+# def itm_rank_collate(inputs):
+#     input_ids, imgs, loss_mask, img_id = list(map(list, unzip(concat(i for i in [inputs]))))
+#     #print('got loss: mask', loss_mask)
+#     input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
+#     #sep = torch.stack(sep, dim=0).unsqueeze(-1)
+#     #input_ids = torch.cat([input_ids, sep], dim=1)
+#     #position_ids = torch.arange(0, input_ids.size(1), dtype=torch.long).unsqueeze(0)
+
+#     loss_mask = pad_sequence(loss_mask, batch_first=True, padding_value=True)
+
+#     _, max_txt_len = input_ids.size()
 
 
-    batch = {
-        'imgs': imgs,
-        'input_ids': input_ids,
-        #'cls_t_head': cls_t_head,
-        #'position_ids': position_ids,
-        #'txt_len': max_txt_len - 1,
-        'loss_mask': loss_mask,
-        'img_id': img_id,
-             }
-    return batch
+#     batch = {
+#         'imgs': imgs,
+#         'input_ids': input_ids,
+#         #'cls_t_head': cls_t_head,
+#         #'position_ids': position_ids,
+#         #'txt_len': max_txt_len - 1,
+#         'loss_mask': loss_mask,
+#         'img_id': img_id,
+#              }
+#     return batch

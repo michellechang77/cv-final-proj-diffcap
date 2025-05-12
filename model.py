@@ -3,7 +3,7 @@ import torch as th
 import torch.nn as nn
 from torch.nn import SiLU
 
-from transformers import AutoConfig
+from transformers import AutoConfig, BertModel
 from transformers.models.bert.modeling_bert import BertEncoder as BertEncoder_for_Dlm
 
 from bert import BertLayer
@@ -36,31 +36,30 @@ class BertEncoder(nn.Module):
 class TextEmbeddings(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.word_embeddings = nn.Embedding(config.vocab_size,
-                                            config.hidden_size, padding_idx=0)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings,
-                                                config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size,
-                                                  config.hidden_size)
-
-        # self.LayerNorm is not snake-cased to stick with TensorFlow model
-        # variable name and be able to load any TensorFlow checkpoint file
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.word_embeddings = nn.Embedding(config.bert.vocab_size, config.bert.hidden_size, padding_idx=0)
+        self.position_embeddings = nn.Embedding(config.bert.max_position_embeddings, config.bert.hidden_size)
+        self.token_type_embeddings = nn.Embedding(config.bert.type_vocab_size, config.bert.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.bert.hidden_size, eps=1e-12)
+        self.dropout = nn.Dropout(config.bert.hidden_dropout_prob)
 
     def forward(self, input_ids, position_ids, token_type_ids=None):
         if token_type_ids is None:
             token_type_ids = torch.zeros(size=(input_ids.shape[0], input_ids.shape[1]), dtype=torch.long).to(input_ids.device)
 
-        words_embeddings = self.word_embeddings(input_ids)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
-        position_embeddings = self.position_embeddings(position_ids)
+        # Ensure position_ids are in the correct range
+        if position_ids.max() >= self.position_embeddings.num_embeddings:
+            raise IndexError(f"Position ID {position_ids.max()} is out of range. Maximum allowed is {self.position_embeddings.num_embeddings - 1}.")
 
-        embeddings = (words_embeddings + position_embeddings + token_type_embeddings)
+        embeddings = (
+            self.word_embeddings(input_ids) +
+            self.position_embeddings(position_ids) +
+            self.token_type_embeddings(token_type_ids)
+        )
 
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
+
 
 class TextEmbeddingsforRoc(nn.Module):
     def __init__(self, config):
@@ -105,6 +104,8 @@ class ImageEmbeddings(nn.Module):
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
+
+from argparse import Namespace
 
 class BertEmbeddingsForDifussionLM(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
@@ -210,118 +211,65 @@ class CapLM(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.feature_type = config.model.feature_type
-        self.embeddings = BertEmbeddingsForDifussionLM(config.bert,
-                                                       img_dim=config.model.feature_dim,
+        self.embeddings = BertEmbeddingsForDiffusionLM(config.bert, 
+                                                       img_dim=config.model.feature_dim, 
                                                        unconditional=config.model.unconditional)
-        bert_config = AutoConfig.from_pretrained('bert-base-uncased')
+        
+        # Load the BERT model with the correct configuration
+        bert_config = AutoConfig.from_pretrained("bert-base-uncased")
         bert_config.hidden_dropout_prob = config.bert.hidden_dropout_prob
-        self.bert_encoder = BertEncoder_for_Dlm(bert_config)
+        
+        # Use from_pretrained to ensure correct weight names
+        self.bert_encoder = BertModel(bert_config)
 
+        # Load the pretrained weights correctly
         if config.training.encoder_reinit:
-            print("===== reinitializing encoder =====")
-            #for param in self.bert_encoder.parameters():
-                #torch.nn.init.normal_(param) deprecated, this is not a good way to reinit
+            print("===== Reinitializing encoder =====")
+            self.bert_encoder.apply(self._init_weights)
         else:
-            print("===== loading Bert uncased weights =====")
-            self.bert_encoder.load_state_dict(torch.load(config.bert.bert_encoder_path))
-
-        self.word_embedding = torch.nn.Embedding(config.bert.vocab_size, config.bert.vocab_dim)
-        #self.word_embedding.weight.data.normal_(mean=0.0)
-
-        self.embeddings.embeddings.word_embeddings = nn.Sequential()
-        self.config = config
-        self.max_len = config.model.max_len
+            print("===== Loading BERT uncased weights =====")
+            self.bert_encoder = BertModel.from_pretrained("bert-base-uncased")
+        
         self.lm_head = nn.Linear(config.bert.hidden_size, config.bert.vocab_size)
-        with torch.no_grad():
-            self.lm_head.weight = self.word_embedding.weight
 
-        self.time_embedding = nn.Sequential(
-            nn.Linear(config.bert.vocab_dim, min(config.bert.vocab_dim*4, config.bert.hidden_size)),
-            SiLU(),
-            nn.Linear(min(config.bert.vocab_dim*4, config.bert.hidden_size), config.bert.hidden_size),
-        )
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
 
-        if config.model.condition_method == 'add' or config.model.condition_method == 'prefix':
-            self.condition_proj = nn.Sequential(
-                nn.Linear(config.model.feature_dim, config.bert.hidden_size),
-                nn.Tanh(),
-                nn.Linear(config.bert.hidden_size, config.bert.hidden_size),)
-        else:
-            raise NotImplementedError
-        self.input_up_proj = nn.Sequential(
-            nn.Linear(config.bert.vocab_dim, config.bert.hidden_size),
-            nn.Tanh(),
-            nn.Linear(config.bert.hidden_size, config.bert.hidden_size),
-        )
-
-        self.output_down_proj = nn.Sequential(
-            nn.Linear(config.bert.hidden_size, config.bert.hidden_size),
-            nn.Tanh(),
-            nn.Linear(config.bert.hidden_size, config.bert.vocab_dim),
-        )
-
-        if config.training.fp16:
-            print("===== FP16 training=====")
-        else:
-            print("===== FP32 training=====")
-
-    def get_sep_embedding(self, batch_size, sep_id):
-        sep_embedding = self.txt_word_embeddings(torch.tensor([sep_id] * batch_size).to('cuda'))
-        return sep_embedding
-
-    def timestep_embedding(self, timesteps, dim, max_period=10000):
-        """
-        Create sinusoidal timestep embeddings.
-
-        :param timesteps: a 1-D Tensor of N indices, one per batch element.
-                          These may be fractional.
-        :param dim: the dimension of the output.
-        :param max_period: controls the minimum frequency of the embeddings.
-        :return: an [N x dim] Tensor of positional embeddings.
-        """
-        half = dim // 2
-        freqs = th.exp(
-            -math.log(max_period) * th.arange(start=0, end=half, dtype=th.float32) / half
-        ).to(device=timesteps.device)
-        args = timesteps[:, None].float() * freqs[None]
-        embedding = th.cat([th.cos(args), th.sin(args)], dim=-1)
-        if dim % 2:
-            embedding = th.cat([embedding, th.zeros_like(embedding[:, :1])], dim=-1)
-        return embedding
-
-    def get_logits(self, sequence_output):
+    def forward(self, input_ids, position_ids, img_feat=None, img_pos_ids=None, token_type_ids=None):
+        embeddings = self.embeddings(input_ids, position_ids, img_feat, img_pos_ids, token_type_ids)
+        sequence_output = self.bert_encoder(inputs_embeds=embeddings).last_hidden_state
         logits = self.lm_head(sequence_output)
         return logits
+    
+class BertEmbeddingsForDiffusionLM(nn.Module):
+    def __init__(self, config, img_dim=768, unconditional=False):
+        super().__init__()
+        self.config = config
+        self.embeddings = TextEmbeddings(config)
+        self.image_embeddings = ImageEmbeddings(config, img_dim, unconditional)
 
-    def forward(self, condition, t, x_t):
-        x_embedding = self.input_up_proj(x_t)
+    def forward(self, input_ids, position_ids, img_feat=None, img_pos_ids=None, token_type_ids=None):
+        # Compute text embeddings
+        txt_emb = self.embeddings(input_ids, position_ids, token_type_ids)
 
-        time_embedding = self.time_embedding(self.timestep_embedding(t, self.config.bert.vocab_dim))
-        time_embedding = time_embedding.unsqueeze(1).expand(-1, x_embedding.shape[1], -1)
-
-        txt_embs = x_embedding + time_embedding
-
-        #cls_head = self.in_proj(self.get_sep_embedding(txt_embs.size(0), 0).unsqueeze(1))
-        #sep_head = self.in_proj(self.get_sep_embedding(txt_embs.size(0), 1).unsqueeze(1))
-
-        #sep_with_diffused = torch.cat([sep_head, txt_embs], dim=1)
-        if self.config.model.condition_method == 'add':
-            if len(condition.shape) == 2:
-                condition = condition.unsqueeze(1).expand(-1, self.config.model.max_len, -1)
-            else:
-                raise NotImplementedError
-            txt_embs = txt_embs + self.condition_proj(condition)
-            embedding_output = self.embeddings(None, txt_embs)
-        elif self.config.model.condition_method == 'prefix':
-            embedding_output = self.embeddings(condition, txt_embs)
+        # Compute image embeddings if available
+        if img_feat is not None:
+            if img_pos_ids is None:
+                img_pos_ids = torch.arange(img_feat.size(1), device=img_feat.device)
+            img_emb = self.image_embeddings(img_feat, img_pos_ids, token_type_ids)
+            # Concatenate text and image embeddings
+            embeddings = torch.cat([img_emb, txt_emb], dim=1)
         else:
-            raise NotImplementedError
+            embeddings = txt_emb
 
-        sequence_output = self.bert_encoder(embedding_output).last_hidden_state
-
-        sequence_output = self.output_down_proj(sequence_output[:, -self.config.model.max_len:, :])
-
-        return sequence_output
+        return embeddings
 
 class SiLUbak(nn.Module):
     def forward(self, x):

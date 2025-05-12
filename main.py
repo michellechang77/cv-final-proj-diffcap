@@ -8,7 +8,6 @@ import os
 import torch
 import numpy as np
 import torch.utils.tensorboard as tb
-from horovod import torch as hvd
 
 from diffusion import Diffusion
 
@@ -25,17 +24,20 @@ def dict2namespace(config):
     return namespace
 
 def main(args, config):
-    #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
-    hvd.init()
+    # No Horovod initialization
     devices = [torch.device("cuda", i) for i in range(torch.cuda.device_count())]
     devices = [devices[i] for i in args.gpus]
     n_gpu = len(args.gpus)
-    device = devices[hvd.local_rank()]
+    
+    # Always use the first GPU in the list
+    device = devices[0]
     torch.cuda.set_device(device)
 
-    args.rank = hvd.rank()
-    logging.info("device: {} n_gpu: {}, rank: {}, ".format(device, n_gpu, hvd.rank()))
+    # No Horovod rank, always use 0
+    args.rank = 0
+    logging.info("device: {} n_gpu: {}, rank: {}".format(device, n_gpu, 0))
 
     '''
     if config.training.gradient_accumulation_steps < 1:
@@ -44,23 +46,23 @@ def main(args, config):
                             args.gradient_accumulation_steps))
     '''
 
-    if hvd.rank() == 0:
-        logging.info("Writing log file to {}".format(args.log_path))
-        logging.info("Exp instance id = {}".format(os.getpid()))
-        logging.info("Exp comment = {}".format(args.comment))
+    # Always execute this part since we're the only process
+    logging.info("Writing log file to {}".format(args.log_path))
+    logging.info("Exp instance id = {}".format(os.getpid()))
+    logging.info("Exp comment = {}".format(args.comment))
 
-        #yaml.safe_dump(str(config), open(os.path.join(args.exp, 'config.yaml'), 'w'))
-        print('yaml dump at {}'.format(os.path.join(args.exp, 'config.yaml')))
+    print('yaml dump at {}'.format(os.path.join(args.exp, 'config.yaml')))
+    
     try:
         runner = Diffusion(args, config, device)
         if args.sample:
             decodeds, gts, gt_ids = runner.sample(args, config)
-            if hvd.rank() == 0:
-                with open(os.path.join(args.exp, 'sample.txt'), 'w') as f:
-                    for decoded, gt, gt_id in zip(decodeds, gts, gt_ids):
-                        f.write('gt_id: {}\n'.format(gt_id))
-                        f.write('gt: {}\n'.format(gt))
-                        f.write('decoded: {}\n'.format(decoded))
+            # Always execute this part since we're the only process
+            with open(os.path.join(args.exp, 'sample.txt'), 'w') as f:
+                for decoded, gt, gt_id in zip(decodeds, gts, gt_ids):
+                    f.write('gt_id: {}\n'.format(gt_id))
+                    f.write('gt: {}\n'.format(gt))
+                    f.write('decoded: {}\n'.format(decoded))
 
         elif args.test:
             runner.test()
